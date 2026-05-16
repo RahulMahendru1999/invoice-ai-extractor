@@ -1,14 +1,14 @@
-# -----------------------------
-# 1. Restart Python Environment
-# -----------------------------
-dbutils.library.restartPython()
+
 
 # -----------------------------
-# 2. Install Required Packages
+# 1. Install Required Packages
 # -----------------------------
-%pip install pypdf
-%pip install --upgrade pip
-%pip install --upgrade google-genai pydantic typing_extensions
+%pip install --force-reinstall typing_extensions>=4.12.0 google-genai pydantic pypdf openpyxl
+
+# -----------------------------
+# 2. Restart Python Environment
+# -----------------------------
+dbutils.library.restartPython()
 
 # -----------------------------
 # 3. Imports
@@ -18,101 +18,108 @@ from google import genai
 import json
 import os
 import time
-
-# -----------------------------
-# 4. Gemini Client Setup
-# -----------------------------
-# ⚠️ Recommended: store API key in Databricks Secret instead of hardcoding
-# Example: dbutils.secrets.get(scope="my_scope", key="gemini_api_key")
-
-client = genai.Client(
-    api_key="YOUR_API_KEY_HERE"
-)
-
-# -----------------------------
-# 5. PDF File Paths
-# -----------------------------
+import re
+import pandas as pd
+ 
+# Gemini Client
+client = genai.Client(api_key="YOUR_API_KEY")
+ 
+# PDF Files
 pdf_files = [
-    "/Workspace/Users/rahulmahendru1999@gmail.com/pload/Memo_1F.pdf",
-    "/Workspace/Users/rahulmahendru1999@gmail.com/pload/Memo_In.pdf",
-    "/Workspace/Users/rahulmahendru1999@gmail.com/pload/Memo_Sam.PDF"
+    "/Workspace/Users/rahulmahendru1999@gmail.com/pload/Memo_1Fii_.pdf",
+    "/Workspace/Users/rahulmahendru1999@gmail.com/pload/Memo_Inv.pdf",
+    "/Workspace/Users/rahulmahendru1999@gmail.com/pload/Memo_Sa.PDF"
 ]
-
-# -----------------------------
-# 6. Processing Logic
-# -----------------------------
+ 
 results = []
-
+ 
+# Loop Through PDFs
 for pdf_path in pdf_files:
-
     print(f"\nProcessing File: {os.path.basename(pdf_path)}")
-
+ 
     try:
-        # -------------------------
-        # Extract Text from PDF
-        # -------------------------
+        # Read PDF
         reader = PdfReader(pdf_path)
         text = ""
-
         for page in reader.pages:
             extracted = page.extract_text()
             if extracted:
                 text += extracted + "\n"
-
-        # Limit text size for token control
+ 
+        # Reduce token usage
         text = text[:5000]
-
-        # -------------------------
-        # Prompt for Gemini
-        # -------------------------
+ 
+        # Prompt
         prompt = f"""
         Extract the following fields from this invoice:
-
+ 
         - vendor_name
         - invoice_number
         - invoice_date
         - total_amount
-
+ 
         Return ONLY valid JSON.
-
+ 
         Invoice Text:
         {text}
         """
-
-        # -------------------------
-        # Call Gemini Model
-        # -------------------------
+ 
+        # Send to Gemini
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt
         )
-
+ 
+        # Get Output
         output = response.text.strip()
-
         print("\nAI Output:")
         print(output)
-
-        # -------------------------
-        # Store Result
-        # -------------------------
+ 
+        # Save Result
         results.append({
             "file_name": os.path.basename(pdf_path),
             "response": output
         })
-
-        # -------------------------
-        # Rate limit handling
-        # -------------------------
-        print("\nWaiting 45 seconds to avoid API quota limits...")
-        time.sleep(45)
-
+ 
+        # Wait to avoid quota limits
+        print("\nWaiting 10 seconds...")
+        time.sleep(10)
+ 
     except Exception as e:
-        print("\nError Processing File:")
+        print(f"\nError Processing File:")
         print(str(e))
-
-# -----------------------------
-# 7. Final Output
-# -----------------------------
+ 
+# Parse and clean results
+clean_results = []
+for r in results:
+    raw = r["response"]
+    raw = re.sub(r'^```json\s*', '', raw)
+    raw = re.sub(r'\s*```$', '', raw)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = {"vendor_name": "", "invoice_number": "", "invoice_date": "", "total_amount": ""}
+    clean_results.append({
+        "file_name": r["file_name"],
+        **parsed
+    })
+ 
+# Create DataFrame
+df_results = pd.DataFrame(clean_results)
+ 
+# Fix mixed types in total_amount
+df_results["total_amount"] = (
+    df_results["total_amount"]
+    .astype(str)
+    .str.replace(",", "", regex=False)
+    .str.replace("$", "", regex=False)
+    .astype(float)
+)
+ 
 print("\nProcessing Completed")
-
-print(json.dumps(results, indent=4))
+display(df_results)
+ 
+# Save to Excel
+output_path = "/Workspace/Users/rahulmahendru1999@gmail.com/pload/Invoice_Extracted_Results.xlsx"
+df_results.to_excel(output_path, index=False)
+print(f"\nFile saved: {output_path}")
